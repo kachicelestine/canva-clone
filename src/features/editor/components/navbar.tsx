@@ -10,8 +10,10 @@ import {
   Undo2
 } from "lucide-react";
 
+import { ActiveTool } from "@/features/editor/types";
 import { Logo } from "@/features/editor/components/logo";
 
+import { cn } from "@/lib/utils";
 import { Hint } from "@/components/hint";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -22,7 +24,15 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-export const Navbar = () => {
+interface NavbarProps {
+  activeTool: ActiveTool;
+  onChangeActiveTool: (tool: ActiveTool) => void;
+};
+
+export const Navbar = ({
+  activeTool,
+  onChangeActiveTool,
+}: NavbarProps) => {
   return (
     <nav className="w-full flex items-center p-4 h-[68px] gap-x-8 border-b lg:pl-[34px]">
       <Logo />
@@ -54,8 +64,8 @@ export const Navbar = () => {
           <Button
             variant="ghost"
             size="icon"
-            onClick={() => {}} // TODO: Add functionality
-            className="" // TODO: add dynamic class
+            onClick={() => onChangeActiveTool("select")}
+            className={cn(activeTool === "select" && "bg-gray-100")}
           >
             <MousePointerClick className="size-4" />
           </Button>
