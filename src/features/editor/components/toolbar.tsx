@@ -14,7 +14,8 @@ import {
   ChevronDown, 
   AlignLeft, 
   AlignCenter, 
-  AlignRight
+  AlignRight,
+  Trash
 } from "lucide-react";
 
 import { isTextType } from "@/features/editor/utils";
@@ -380,6 +381,17 @@ export const Toolbar = ({
             className={cn(activeTool === "opacity" && "bg-gray-100")}
           >
             <RxTransparencyGrid className="size-4" />
+          </Button>
+        </Hint>
+      </div>
+      <div className="flex items-center h-full justify-center">
+        <Hint label="Delete" side="bottom" sideOffset={5}>
+          <Button
+            onClick={() => editor?.delete()}
+            size="icon"
+            variant="ghost"
+          >
+            <Trash className="size-4" />
           </Button>
         </Hint>
       </div>
