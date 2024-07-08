@@ -10,7 +10,7 @@ import {
   Undo2
 } from "lucide-react";
 
-import { ActiveTool } from "@/features/editor/types";
+import { ActiveTool, Editor } from "@/features/editor/types";
 import { Logo } from "@/features/editor/components/logo";
 
 import { cn } from "@/lib/utils";
@@ -25,11 +25,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 interface NavbarProps {
+  editor: Editor | undefined;
   activeTool: ActiveTool;
   onChangeActiveTool: (tool: ActiveTool) => void;
 };
 
 export const Navbar = ({
+  editor,
   activeTool,
   onChangeActiveTool,
 }: NavbarProps) => {
@@ -72,20 +74,20 @@ export const Navbar = ({
         </Hint>
         <Hint label="Undo" side="bottom" sideOffset={10}>
           <Button
+            disabled={!editor?.canUndo()}
             variant="ghost"
             size="icon"
-            onClick={() => {}} // TODO: Add functionality
-            className="" // TODO: add dynamic class
+            onClick={() => editor?.onUndo()}
           >
             <Undo2 className="size-4" />
           </Button>
         </Hint>
         <Hint label="Redo" side="bottom" sideOffset={10}>
           <Button
+            disabled={!editor?.canRedo()}
             variant="ghost"
             size="icon"
-            onClick={() => {}} // TODO: Add functionality
-            className="" // TODO: add dynamic class
+            onClick={() => editor?.onRedo()}
           >
             <Redo2 className="size-4" />
           </Button>
