@@ -4,7 +4,6 @@ import {
   LayoutTemplate,
   ImageIcon,
   Pencil,
-  Presentation,
   Settings,
   Shapes,
   Sparkles,
@@ -49,6 +48,12 @@ export const Sidebar = ({
           label="Shapes"
           isActive={activeTool === "shapes"}
           onClick={() => onChangeActiveTool("shapes")}
+        />
+        <SidebarItem
+          icon={Pencil}
+          label="Draw"
+          isActive={activeTool === "draw"}
+          onClick={() => onChangeActiveTool("draw")}
         />
         <SidebarItem
           icon={Sparkles}

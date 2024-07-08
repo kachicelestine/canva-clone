@@ -21,27 +21,12 @@ import { TextSidebar } from "@/features/editor/components/text-sidebar";
 import { FontSidebar } from "@/features/editor/components/font-sidebar";
 import { ImageSidebar } from "@/features/editor/components/image-sidebar";
 import { FilterSidebar } from "@/features/editor/components/filter-sidebar";
+import { DrawSidebar } from "@/features/editor/components//draw-sidebar";
 import { AiSidebar } from "@/features/editor/components/ai-sidebar";
 import { RemoveBgSidebar } from "@/features/editor/components/remove-bg-sidebar";
 
 export const Editor = () => {
   const [activeTool, setActiveTool] = useState<ActiveTool>("select");
-
-  const onChangeActiveTool = useCallback((tool: ActiveTool) => {
-    if (tool === activeTool) {
-      return setActiveTool("select");
-    }
-
-    if (tool === "draw") {
-      // TODO: Enable draw mode
-    }
-
-    if (activeTool === "draw") {
-      /// TODO: Disable draw mode
-    }
-    
-    setActiveTool(tool);
-  }, [activeTool]);
 
   const onClearSelection = useCallback(() => {
     if (selectionDependentTools.includes(activeTool)) {
@@ -52,6 +37,22 @@ export const Editor = () => {
   const { init, editor } = useEditor({
     clearSelectionCallback: onClearSelection,
   });
+
+  const onChangeActiveTool = useCallback((tool: ActiveTool) => {
+    if (tool === "draw") {
+      editor?.enableDrawingMode();
+    }
+
+    if (activeTool === "draw") {
+      editor?.disableDrawingMode();
+    }
+
+    if (tool === activeTool) {
+      return setActiveTool("select");
+    }
+    
+    setActiveTool(tool);
+  }, [activeTool, editor]);
 
   const canvasRef = useRef(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -134,6 +135,11 @@ export const Editor = () => {
           onChangeActiveTool={onChangeActiveTool}
         />
         <RemoveBgSidebar
+          editor={editor}
+          activeTool={activeTool}
+          onChangeActiveTool={onChangeActiveTool}
+        />
+        <DrawSidebar
           editor={editor}
           activeTool={activeTool}
           onChangeActiveTool={onChangeActiveTool}
