@@ -24,6 +24,7 @@ import { createFilter, isTextType } from "@/features/editor/utils";
 import { useClipboard } from "@/features/editor/hooks//use-clipboard";
 import { useAutoResize } from "@/features/editor/hooks/use-auto-resize";
 import { useCanvasEvents } from "@/features/editor/hooks/use-canvas-events";
+import { useHotkeys } from "@/features/editor/hooks/use-hotkeys";
 
 const buildEditor = ({
   save,
@@ -570,6 +571,15 @@ export const useEditor = ({
     canvas,
     setSelectedObjects,
     clearSelectionCallback,
+  });
+
+  useHotkeys({
+    undo,
+    redo,
+    copy,
+    paste,
+    save,
+    canvas,
   });
 
   const editor = useMemo(() => {
