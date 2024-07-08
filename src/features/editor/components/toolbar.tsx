@@ -17,7 +17,8 @@ import {
   AlignCenter, 
   AlignRight,
   Trash,
-  SquareSplitHorizontal
+  SquareSplitHorizontal,
+  Copy
 } from "lucide-react";
 
 import { isTextType } from "@/features/editor/utils";
@@ -418,6 +419,20 @@ export const Toolbar = ({
             className={cn(activeTool === "opacity" && "bg-gray-100")}
           >
             <RxTransparencyGrid className="size-4" />
+          </Button>
+        </Hint>
+      </div>
+      <div className="flex items-center h-full justify-center">
+        <Hint label="Duplicate" side="bottom" sideOffset={5}>
+          <Button
+            onClick={() => {
+              editor?.onCopy();
+              editor?.onPaste();
+            }}
+            size="icon"
+            variant="ghost"
+          >
+            <Copy className="size-4" />
           </Button>
         </Hint>
       </div>
