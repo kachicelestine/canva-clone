@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 
 import { useGetProjects } from "@/features/projects/api/use-get-projects";
+import { useDuplicateProject } from "@/features/projects/api/use-duplicate-project";
 
 import {
   DropdownMenuContent,
@@ -30,7 +31,12 @@ import {
 import { Button } from "@/components/ui/button";
 
 export const ProjectsSection = () => {
+  const duplicateMutation = useDuplicateProject();
   const router = useRouter();
+
+  const onCopy = (id: string) => {
+    duplicateMutation.mutate({ id });
+  };
 
   const {
     data,
@@ -131,8 +137,8 @@ export const ProjectsSection = () => {
                       <DropdownMenuContent align="end" className="w-60">
                         <DropdownMenuItem
                           className="h-10 cursor-pointer"
-                          disabled={false}
-                          onClick={() => {}}
+                          disabled={duplicateMutation.isPending}
+                          onClick={() => onCopy(project.id)}
                         >
                           <CopyIcon className="size-4 mr-2" />
                           Make a copy
