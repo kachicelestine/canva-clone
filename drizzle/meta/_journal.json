@@ -15,6 +15,13 @@
       "when": 1720560776771,
       "tag": "0001_needy_scorpion",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1720615645551,
+      "tag": "0002_aspiring_mephisto",
+      "breakpoints": true
     }
   ]
 }
