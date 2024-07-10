@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 
 import { useGetProjects } from "@/features/projects/api/use-get-projects";
+import { useDeleteProject } from "@/features/projects/api/use-delete-project";
 import { useDuplicateProject } from "@/features/projects/api/use-duplicate-project";
 
 import {
@@ -29,13 +30,27 @@ import {
   TableCell,
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
+import { useConfirm } from "@/hooks/use-confirm";
 
 export const ProjectsSection = () => {
+  const [ConfirmDialog, confirm] = useConfirm(
+    "Are you sure?",
+    "You are about to delete this project.",
+  );
   const duplicateMutation = useDuplicateProject();
+  const removeMutation = useDeleteProject();
   const router = useRouter();
 
   const onCopy = (id: string) => {
     duplicateMutation.mutate({ id });
+  };
+
+  const onDelete = async (id: string) => {
+    const ok = await confirm();
+
+    if (ok) {
+      removeMutation.mutate({ id });
+    }
   };
 
   const {
@@ -93,6 +108,7 @@ export const ProjectsSection = () => {
 
   return (
     <div className="space-y-4"> 
+      <ConfirmDialog />
       <h3 className="font-semibold text-lg">
         Recent projects
       </h3>
@@ -145,8 +161,8 @@ export const ProjectsSection = () => {
                         </DropdownMenuItem>
                         <DropdownMenuItem
                           className="h-10 cursor-pointer"
-                          disabled={false}
-                          onClick={() => {}}
+                          disabled={removeMutation.isPending}
+                          onClick={() => onDelete(project.id)}
                         >
                           <Trash className="size-4 mr-2" />
                           Delete
