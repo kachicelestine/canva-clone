@@ -3,6 +3,8 @@
 import { fabric } from "fabric";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { ResponseType } from "@/features/projects/api/use-get-project";
+
 import { 
   ActiveTool, 
   selectionDependentTools
@@ -26,7 +28,11 @@ import { AiSidebar } from "@/features/editor/components/ai-sidebar";
 import { RemoveBgSidebar } from "@/features/editor/components/remove-bg-sidebar";
 import { SettingsSidebar } from "@/features/editor/components/settings-sidebar";
 
-export const Editor = () => {
+interface EditorProps {
+  initialData: ResponseType["data"];
+};
+
+export const Editor = ({ initialData }: EditorProps) => {
   const [activeTool, setActiveTool] = useState<ActiveTool>("select");
 
   const onClearSelection = useCallback(() => {
