@@ -50,6 +50,7 @@
     "react-use": "^17.5.0",
     "replicate": "^0.31.1",
     "sonner": "^1.5.0",
+    "stripe": "^16.2.0",
     "tailwind-merge": "^2.3.0",
     "tailwindcss-animate": "^1.0.7",
     "unsplash-js": "^7.0.19",
