@@ -1,602 +1,630 @@
 # Canvify
 
-A production-grade, browser-based graphic design platform built on Next.js 14. Users create, edit, and export multi-layer canvas designs with real-time autosave, AI-assisted tooling, an image library, and a Stripe-gated Pro subscription tier.
+A production-grade, browser-based graphic design platform. Users create, edit, and export multi-layer canvas designs with real-time autosave, AI-assisted tooling, a searchable image library, and a Stripe-gated Pro subscription tier.
 
 ---
 
 ## Table of Contents
 
-1. [System Architecture](#system-architecture)
-2. [Tech Stack](#tech-stack)
-3. [Database Schema](#database-schema)
-4. [API Design](#api-design)
-5. [Editor Architecture](#editor-architecture)
-6. [Authentication & Authorization](#authentication--authorization)
-7. [Subscription & Billing](#subscription--billing)
-8. [AI Integration](#ai-integration)
-9. [Design Decisions & Trade-offs](#design-decisions--trade-offs)
-10. [Local Development](#local-development)
-11. [Environment Variables](#environment-variables)
-12. [Deployment](#deployment)
+1. [System Architecture](#1-system-architecture)
+2. [Tech Stack & Rationale](#2-tech-stack--rationale)
+3. [Database Schema](#3-database-schema)
+4. [API Surface](#4-api-surface)
+5. [Editor Architecture](#5-editor-architecture)
+6. [Auth & Session Design](#6-auth--session-design)
+7. [Subscription & Paywall](#7-subscription--paywall)
+8. [AI Pipeline](#8-ai-pipeline)
+9. [File Storage](#9-file-storage)
+10. [Design Decisions & Trade-offs](#10-design-decisions--trade-offs)
+11. [Operational Runbook](#11-operational-runbook)
+12. [Local Development](#12-local-development)
+13. [Docker Deployment](#13-docker-deployment)
+14. [Environment Variables](#14-environment-variables)
 
 ---
 
-## System Architecture
+## 1. System Architecture
+
+### High-Level Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                          Browser (Client)                           │
-│                                                                     │
-│  ┌─────────────────┐   ┌───────────────┐   ┌─────────────────────┐ │
-│  │  Next.js App    │   │  Fabric.js    │   │  TanStack Query     │ │
-│  │  (App Router)   │   │  Canvas       │   │  Cache + Mutations  │ │
-│  │  RSC + Client   │   │  (Editor)     │   │  (500ms debounce)   │ │
-│  └────────┬────────┘   └───────┬───────┘   └──────────┬──────────┘ │
-│           │                   │                        │            │
-└───────────┼───────────────────┼────────────────────────┼────────────┘
-            │                   │                        │
-            ▼                   ▼                        ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                       Next.js Server (Node.js)                      │
-│                                                                     │
-│  ┌───────────────────────────────────────────────────────────────┐  │
-│  │                    Hono RPC Router  /api/*                    │  │
-│  │                                                               │  │
-│  │  ┌──────────┐ ┌──────────┐ ┌───────────┐ ┌───────────────┐  │  │
-│  │  │ /projects│ │  /users  │ │  /images  │ │/subscriptions │  │  │
-│  │  └──────────┘ └──────────┘ └─────┬─────┘ └──────┬────────┘  │  │
-│  │                                  │               │            │  │
-│  │              ┌───────────────────┘               │            │  │
-│  │              │          /ai  ┌────────────────────┘           │  │
-│  │              │          ┌───────────────┐                     │  │
-│  │              │          │ /generate-img │                     │  │
-│  │              │          │ /remove-bg    │                     │  │
-│  │              │          └───────────────┘                     │  │
-│  └──────────────┼───────────────────────────────────────────────┘  │
-│                 │                                                   │
-│  ┌──────────────▼───────────────────────────────────────────────┐  │
-│  │                NextAuth.js  /api/auth/*                      │  │
-│  │         Credentials  │  Google OAuth  │  JWT Sessions        │  │
-│  └──────────────────────────────────────────────────────────────┘  │
-│                                                                     │
-└──────────────────────┬──────────────────────────────────────────────┘
-                       │
-          ┌────────────┼──────────────────────────────┐
-          │            │                              │
-          ▼            ▼                              ▼
-┌──────────────┐ ┌───────────┐              ┌─────────────────┐
-│  Neon        │ │  Stripe   │              │   Replicate     │
-│  Serverless  │ │  (Billing)│              │   (AI Models)   │
-│  PostgreSQL  │ │  Webhooks │              │   SD3 + Rembg   │
-└──────────────┘ └───────────┘              └─────────────────┘
-                       │
-               ┌───────┴───────┐
-               ▼               ▼
-        ┌──────────┐   ┌─────────────┐
-        │ Unsplash │   │ UploadThing │
-        │  Images  │   │  (Storage)  │
-        └──────────┘   └─────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                              Browser (Client)                                │
+│                                                                              │
+│  ┌──────────────────┐   ┌────────────────────┐   ┌────────────────────────┐ │
+│  │  Next.js 14      │   │   Fabric.js 5       │   │  TanStack Query 5      │ │
+│  │  App Router      │   │   Canvas Engine     │   │  Cache + Mutations     │ │
+│  │  RSC + Client    │   │   (imperative)      │   │  500 ms debounce save  │ │
+│  └────────┬─────────┘   └─────────┬──────────┘   └──────────┬─────────────┘ │
+│           │                       │                          │               │
+└───────────┼───────────────────────┼──────────────────────────┼───────────────┘
+            │  HTTP / RPC           │  canvas events           │  PATCH /projects/:id
+            ▼                       ▼                          ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                          Next.js Server  (Node.js)                           │
+│                                                                              │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │                    Hono RPC Router  /api/*                             │  │
+│  │                                                                        │  │
+│  │  /projects    /users    /images    /ai              /subscriptions     │  │
+│  │   CRUD         me       Unsplash   generate-image   checkout           │  │
+│  │   paginate              search     remove-bg        billing-portal     │  │
+│  │   templates                                         webhook            │  │
+│  └───────────────────────────────┬────────────────────────────────────────┘  │
+│                                  │                                            │
+│  ┌───────────────────────────────▼────────────────────────────────────────┐  │
+│  │               NextAuth v5  /api/auth/*                                 │  │
+│  │          Credentials  │  GitHub OAuth  │  Google OAuth  │  JWT         │  │
+│  └───────────────────────────────┬────────────────────────────────────────┘  │
+│                                  │                                            │
+│  ┌───────────────────────────────▼────────────────────────────────────────┐  │
+│  │               Drizzle ORM  →  @neondatabase/serverless                 │  │
+│  └───────────────────────────────┬────────────────────────────────────────┘  │
+└──────────────────────────────────┼─────────────────────────────────────────  ┘
+                                   │
+          ┌────────────────────────┼───────────────────────────────┐
+          │                        │                               │
+          ▼                        ▼                               ▼
+┌─────────────────┐      ┌─────────────────┐             ┌────────────────────┐
+│  Neon           │      │  Stripe         │             │  Replicate         │
+│  Serverless     │      │  Checkout       │             │  Stable Diffusion 3│
+│  PostgreSQL     │      │  Billing Portal │             │  + Rembg           │
+│  (pooled conn.) │      │  Webhooks       │             └────────────────────┘
+└─────────────────┘      └─────────────────┘
+                                   │
+                    ┌──────────────┴──────────────┐
+                    ▼                             ▼
+           ┌─────────────────┐         ┌──────────────────┐
+           │  Unsplash API   │         │  UploadThing     │
+           │  image search   │         │  blob storage    │
+           └─────────────────┘         └──────────────────┘
 ```
 
 ### Request Lifecycle
 
-1. Browser loads the Next.js App — RSC pages render on the server with session context.
-2. The canvas editor is a client component; Fabric.js owns the entire canvas DOM sub-tree.
-3. Every state mutation (draw, type, move) updates Fabric's internal object model.
-4. A 500 ms debounced React Query mutation serializes the canvas to JSON and PATCHes `/api/projects/:id`.
-5. The Hono handler validates the session, runs a `drizzle.update()`, and returns the updated project.
-6. External service calls (Replicate, Unsplash, UploadThing, Stripe) are **always proxied through the server** — no API key is ever sent to the browser.
+```
+Browser                  Next.js Server              Neon DB
+  │                           │                         │
+  │── GET /editor/[id] ──────▶│ RSC: fetch project      │
+  │                           │────── SELECT * ────────▶│
+  │                           │◀──── row ───────────────│
+  │◀── hydrated HTML ─────────│                         │
+  │                           │                         │
+  │  [user edits canvas]      │                         │
+  │  debounce 500 ms          │                         │
+  │── PATCH /api/projects/:id▶│ verifyAuth (JWT)        │
+  │                           │────── UPDATE ──────────▶│
+  │                           │◀──── updated row ───────│
+  │◀── 200 {data} ────────────│                         │
+```
 
 ---
 
-## Tech Stack
+## 2. Tech Stack & Rationale
 
-| Layer | Technology | Rationale |
+| Layer | Choice | Why |
 |---|---|---|
-| Framework | Next.js 14 (App Router) | RSC, nested layouts, file-based routing, edge-ready |
-| Language | TypeScript 5 (strict) | End-to-end type safety via Hono RPC inference |
-| API Layer | Hono 4 | Lightweight, edge-compatible, type-safe RPC without codegen |
-| ORM | Drizzle ORM | SQL-first, zero-overhead types, works with Neon serverless driver |
-| Database | Neon Serverless PostgreSQL | Branching, auto-suspend, HTTP driver for edge compat |
-| Auth | NextAuth v5 (beta) | Multi-provider, Drizzle adapter, JWT sessions |
-| Canvas | Fabric.js 5 | Battle-tested canvas lib with full object model and serialization |
-| State — Server | TanStack React Query 5 | Mutations, cache invalidation, pagination, background refetch |
-| State — Local | Zustand 4 | Minimal boilerplate for modal orchestration |
-| UI Components | shadcn/ui + Radix UI | Accessible primitives, unstyled base, Tailwind integration |
-| Styling | Tailwind CSS 3 + CSS Variables | Design token system via HSL vars; dark-mode ready |
-| File Upload | UploadThing | Managed S3-backed storage; eliminates custom upload infra |
-| Payments | Stripe Subscriptions + Webhooks | PCI-compliant checkout, durable event delivery for billing state |
-| AI — Generation | Replicate (Stable Diffusion 3) | Pay-per-prediction, no GPU infra to operate |
-| AI — Bg Removal | Replicate (Rembg) | Same billing model; composable with generation |
-| Stock Photos | Unsplash API | Royalty-free, curated collections, server-proxied |
-| Validation | Zod | Runtime schema enforcement on all API boundaries |
-| Notifications | Sonner | Accessible toast primitives |
+| Framework | Next.js 14 App Router | Co-locates RSC data-fetching with UI; file-system routing eliminates boilerplate; Vercel-native but portable via standalone output |
+| Canvas | Fabric.js 5 | Most mature browser canvas library; imperative API maps cleanly to undo/redo state machines; v5 is the last stable browser build before v6's ESM-only rewrite |
+| API layer | Hono + `@hono/zod-validator` | Type-safe RPC via `hc` client; edge-compatible if needed; Zod validators enforce the contract at the boundary rather than inside handlers |
+| ORM | Drizzle ORM | Schema-as-TypeScript eliminates a codegen step; zero runtime overhead; the migration tooling (`drizzle-kit`) is first-class |
+| Database | Neon serverless PostgreSQL | Connection pooling built-in; scales to zero in dev; compatible with the standard `pg` wire protocol for local fallback |
+| Auth | NextAuth v5 (Auth.js) + Drizzle adapter | Multi-provider out of the box; JWT strategy removes DB round-trips on every authenticated request; Drizzle adapter keeps session data co-located with domain data |
+| Payments | Stripe Checkout + Billing Portal | Hosted UI removes PCI scope; webhook-driven state machine is robust against checkout abandonment |
+| AI | Replicate (SD3 + Rembg) | Serverless GPU; pay-per-inference; models are swappable without infrastructure changes |
+| Images | Unsplash API | 3M+ CC-licensed assets; search API; no CDN cost for delivery |
+| File storage | UploadThing | S3-backed; React hooks included; eliminates presigned-URL plumbing |
+| State | Zustand (modal state) + TanStack Query (server state) | Zustand for ephemeral UI flags; TanStack Query owns server cache, deduplication, and optimistic updates |
+| Package manager | Bun | 10–20× faster installs than npm; compatible lock file; used only in dev/CI — the production runner uses Node |
 
 ---
 
-## Database Schema
+## 3. Database Schema
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│  users                                                           │
-├─────────────────┬──────────────┬─────────────────────────────── ┤
-│  id             │ text (PK)    │ UUID, auto-generated           │
-│  name           │ text         │ nullable                       │
-│  email          │ text         │ NOT NULL, unique               │
-│  emailVerified  │ timestamp    │ nullable                       │
-│  image          │ text         │ nullable, profile picture URL  │
-│  password       │ text         │ nullable, bcrypt hash          │
-└─────────────────┴──────────────┴────────────────────────────────┘
-       │ 1                                          │ 1
-       │                                           │
-       │ ∞                                         │ ∞
-┌──────────────────────────────────────┐  ┌───────────────────────────────────────┐
-│  projects                            │  │  subscriptions                        │
-├───────────────┬────────────┬─────────┤  ├──────────────────┬─────────┬──────── ┤
-│  id           │ text (PK)  │ UUID    │  │  id              │ text PK │ UUID    │
-│  name         │ text       │ NOT NULL│  │  userId          │ text FK │ CASCADE │
-│  userId       │ text (FK)  │ CASCADE │  │  subscriptionId  │ text    │ Stripe  │
-│  json         │ text       │ NOT NULL│  │  customerId      │ text    │ Stripe  │
-│  height       │ integer    │ NOT NULL│  │  priceId         │ text    │ Stripe  │
-│  width        │ integer    │ NOT NULL│  │  status          │ text    │ active… │
-│  thumbnailUrl │ text       │ nullable│  │  currentPeriodEnd│ ts      │ renewal │
-│  isTemplate   │ boolean    │ nullable│  │  createdAt       │ ts      │         │
-│  isPro        │ boolean    │ nullable│  │  updatedAt       │ ts      │         │
-│  createdAt    │ timestamp  │         │  └──────────────────┴─────────┴─────────┘
-│  updatedAt    │ timestamp  │         │
-└───────────────┴────────────┴─────────┘
-
-┌──────────────────────────────────────────────────────────────────┐
-│  accounts  (NextAuth — OAuth provider links)                     │
-├─────────────────────┬──────────────────────────────────────────  ┤
-│  userId             │ text (FK → users.id, CASCADE)              │
-│  type               │ "oauth" | "oidc"                           │
-│  provider           │ "google" | "github" | …                   │
-│  providerAccountId  │ text                                       │
-│  access_token       │ text, nullable                             │
-│  refresh_token      │ text, nullable                             │
-│  expires_at         │ integer, nullable                          │
-│  PK                 │ (provider, providerAccountId)              │
-└─────────────────────┴──────────────────────────────────────────  ┘
-
-sessions, verificationTokens, authenticators — managed by NextAuth Drizzle adapter
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  user                                                                       │
+│  ─────                                                                      │
+│  id          text  PK  (crypto.randomUUID)                                  │
+│  name        text                                                           │
+│  email       text  NOT NULL                                                 │
+│  password    text  (bcrypt hash, NULL for OAuth users)                      │
+│  image       text                                                           │
+│  emailVerified  timestamp                                                   │
+└──────────────────────────────────┬──────────────────────────────────────────┘
+                                   │ 1:N
+       ┌───────────────────────────┼─────────────────────────────┐
+       │                           │                             │
+       ▼                           ▼                             ▼
+┌─────────────┐          ┌──────────────────┐          ┌──────────────────────┐
+│  account    │          │  project         │          │  subscription        │
+│  ───────    │          │  ───────         │          │  ────────────        │
+│  userId FK  │          │  id     PK       │          │  id         PK       │
+│  provider   │◀─ OAuth ▶│  userId FK       │          │  userId     FK       │
+│  providerAccountId     │  name            │          │  subscriptionId      │
+│  access_token          │  json    text    │          │  customerId          │
+│  refresh_token         │  width   int     │          │  priceId             │
+│  id_token   │          │  height  int     │          │  status              │
+└─────────────┘          │  thumbnailUrl    │          │  currentPeriodEnd    │
+                         │  isTemplate bool │          └──────────────────────┘
+┌─────────────┐          │  isPro      bool │
+│  session    │          │  createdAt       │
+│  ─────────  │          │  updatedAt       │
+│  sessionToken PK       └──────────────────┘
+│  userId FK  │
+│  expires    │
+└─────────────┘
 ```
 
-### Key Schema Decisions
+**Key design notes:**
 
-**`projects.json` as text blob** — The entire Fabric.js canvas state is stored as a serialized JSON string rather than decomposed into relational rows. This avoids the impedance mismatch between a deeply nested canvas object graph and a normalized schema, and makes point-in-time snapshot saves trivial. The trade-off is that the field is opaque to SQL queries (no partial object diffing, no indexed search on canvas content).
-
-**`subscriptions` as a separate table** — Keeps billing data isolated from user PII. Stripe is the system of record; this table is a local cache updated via webhook events, not direct API polling.
+- `project.json` stores the full serialised Fabric.js canvas state as text. This is intentionally schemaless — the canvas object graph is complex and deeply nested; normalising it into relational rows buys nothing and introduces a costly transformation on every save/load.
+- `project.isTemplate` and `project.isPro` are flag columns on the same table. Templates are seeded rows owned by a system user; `isPro` gates template access behind the paywall.
+- `subscription.status` mirrors Stripe's subscription status string (`active`, `trialing`, `past_due`, `canceled`). The canonical source of truth is always Stripe; the local row is a cache updated by webhooks.
 
 ---
 
-## API Design
+## 4. API Surface
 
-All application endpoints are served through a single Hono application mounted at `/api/[[...route]]`. This catch-all Next.js route delegates to Hono's router, which gives us type-safe RPC inference without a code generation step.
+All routes live under `/api` and are served by a single Hono app mounted via Next.js catch-all route `app/api/[[...route]]/route.ts`. Authentication is enforced per-route with `verifyAuth()` from `@hono/auth-js`.
 
-```typescript
-// Client usage — fully typed, no hand-written types
-const client = hc<AppType>(process.env.NEXT_PUBLIC_APP_URL!);
-const res = await client.api.projects.$get({ query: { page: "1" } });
-```
+### Projects
 
-### Endpoint Reference
-
-```
-Projects
-  GET    /api/projects                  Paginated list (cursor: page param)
-  POST   /api/projects                  Create project
-  GET    /api/projects/templates        Paginated template gallery
-  GET    /api/projects/:id              Fetch single project
-  PATCH  /api/projects/:id             Update canvas JSON + dimensions
-  DELETE /api/projects/:id             Hard delete
-  POST   /api/projects/:id/duplicate   Deep clone (new id, new timestamps)
-
-Users
-  POST   /api/users                    Register with email + password
-
-Images
-  GET    /api/images                   30 random Unsplash images
-
-AI
-  POST   /api/ai/generate-image        Stable Diffusion 3 (prompt → URL)
-  POST   /api/ai/remove-bg             Rembg (imageUrl → transparent PNG URL)
-
-Subscriptions
-  POST   /api/subscriptions/checkout   Create Stripe Checkout Session → redirect URL
-  GET    /api/subscriptions/current    Active subscription state for current user
-  POST   /api/subscriptions/billing    Stripe Customer Portal session → redirect URL
-  POST   /api/subscriptions/webhook    Stripe event ingestion (signature-verified)
-
-Auth (NextAuth)
-  *      /api/auth/[...nextauth]       OAuth callbacks, session management
-
-Upload
-  *      /api/uploadthing              UploadThing file event handler
-```
-
-### Auth Middleware
-
-Every Hono route except the Stripe webhook verifies the session via `@hono/auth-js`. A missing or invalid JWT returns `401` before the handler executes. The webhook route uses Stripe signature verification instead — no session context exists for webhook calls.
-
----
-
-## Editor Architecture
-
-The canvas editor is the core of the product. It is built as a React Client Component that owns a `<canvas>` DOM node managed entirely by Fabric.js.
-
-```
-editor/
-├── components/
-│   ├── editor.tsx              Top-level orchestrator; owns active tool state
-│   ├── navbar.tsx              Project title, export, undo/redo, save indicator
-│   ├── toolbar.tsx             Context-sensitive object property controls
-│   ├── sidebar.tsx             Left rail — routes to active tool panel
-│   ├── footer.tsx              Zoom controls, workspace dimensions
-│   └── *-sidebar.tsx           One file per tool panel (15 panels)
-│
-└── hooks/
-    ├── use-editor.ts           Fabric.js wrapper — all canvas operations
-    ├── use-history.ts          In-memory JSON snapshot stack (undo/redo)
-    ├── use-hotkeys.ts          Keyboard shortcut bindings
-    ├── use-clipboard.ts        Object copy/paste via Fabric clone API
-    ├── use-canvas-events.ts    Fabric event → React state bridge
-    ├── use-auto-resize.ts      ResizeObserver → canvas viewport update
-    ├── use-window-events.ts    beforeunload guard for unsaved changes
-    └── use-load-state.ts       Hydrates Fabric canvas from project JSON
-```
-
-### Data Flow
-
-```
-User Interaction
-      │
-      ▼
-Fabric.js Internal Model  ←──────────────── use-editor.ts methods
-      │                                     (addShape, changeFill, etc.)
-      │  canvas:modified / selection:updated events
-      ▼
-use-canvas-events.ts  ───► React state update (selectedObjects, etc.)
-      │
-      ▼
-Toolbar / Sidebars re-render with active object properties
-      │
-      │  Any change also triggers:
-      ▼
-use-history.ts  ──► push JSON snapshot to in-memory stack
-      │
-      ▼
-editor.tsx (500ms debounce)
-      │
-      ▼
-React Query mutation  ──► PATCH /api/projects/:id  ──► Neon DB
-```
-
-### History Implementation
-
-Undo/redo is implemented as an **in-memory array of serialized Fabric JSON snapshots**, not a command/action queue. Each structural change appends to the stack. Undo pops the current state and loads the previous snapshot; redo re-applies the popped state.
-
-Trade-off: Simple to implement and immune to complex action sequencing bugs, but the stack holds complete canvas copies — for a design with dozens of high-res images, each snapshot references those image URLs (not the pixel data), so memory growth is bounded by design complexity, not asset size.
-
-### Autosave
-
-Autosave uses a `lodash.debounce` wrapper around the React Query `updateProject` mutation. The debounce window is **500 ms**. This means:
-- Rapid edits (typing, dragging) coalesce into a single write.
-- A tab close within 500 ms of the last edit may lose that delta. This is an intentional trade-off: a shorter window increases write amplification; a longer window increases data-loss exposure.
-
----
-
-## Authentication & Authorization
-
-```
-Sign-in flow (credentials)
-
-  Browser ──POST /api/auth/callback/credentials──► NextAuth
-                                                       │
-                                          Zod validates {email, password}
-                                                       │
-                                          Drizzle: SELECT user WHERE email=…
-                                                       │
-                                          bcrypt.compare(password, hash)
-                                                       │
-                                          JWT minted → Set-Cookie (httpOnly)
-                                                       │
-  Browser ◄──────────── redirect to dashboard ─────────┘
-
-OAuth flow (Google / GitHub)
-
-  Browser ──► /api/auth/signin/google
-                    │
-              Redirect to provider
-                    │
-              Provider callback → NextAuth
-                    │
-              DrizzleAdapter upserts user + account rows
-                    │
-              JWT minted → Set-Cookie
-                    │
-  Browser ◄── redirect to dashboard
-```
-
-### Session Strategy
-
-JWT sessions are stored in an `httpOnly` cookie. The token carries `id` (user UUID) only — no roles, no permissions. Each API call re-validates by decoding the JWT; no server-side session table lookup is needed on the hot path.
-
-The Drizzle adapter still manages the `sessions`, `accounts`, and `verificationTokens` tables — these are used by the NextAuth UI flows (magic links, session listing in the portal if enabled) but are not read on every API request.
-
----
-
-## Subscription & Billing
-
-```
-Checkout flow
-
-  User clicks "Upgrade"
-        │
-  POST /api/subscriptions/checkout
-        │
-  Stripe creates Checkout Session (mode: subscription)
-        │
-  Browser redirected to Stripe-hosted checkout page
-        │
-  User completes payment
-        │
-  Stripe fires checkout.session.completed webhook
-        │
-  POST /api/subscriptions/webhook (signature verified)
-        │
-  Drizzle INSERT into subscriptions table
-        │
-  User lands on /?success=1 → success modal displayed
-
-Renewal flow
-
-  Stripe fires invoice.payment_succeeded (recurring)
-        │
-  Webhook handler queries subscriptions WHERE subscriptionId=…
-        │
-  Drizzle UPDATE status + currentPeriodEnd
-```
-
-### Subscription State
-
-The `subscriptions.currentPeriodEnd` column is the source of truth for access control. The `checkIsActive` utility adds a 1-day grace buffer:
-
-```typescript
-isActive = currentPeriodEnd.getTime() + DAY_IN_MS > Date.now()
-```
-
-This tolerates Stripe webhook delivery latency and clock skew at renewal boundaries without requiring a synchronous Stripe API call on every page load.
-
-### Paywall Enforcement
-
-```typescript
-// Client-side gate
-const { shouldBlock, triggerPaywall } = usePaywall();
-if (shouldBlock) { triggerPaywall(); return; }
-```
-
-Pro features also carry the `isPro: true` flag on template rows. The API `/projects/templates` filters by `isPro` based on the caller's subscription status, enforcing server-side access control independent of the client-side paywall hook.
-
----
-
-## AI Integration
-
-Both AI features are backed by [Replicate](https://replicate.com/) — a managed model inference platform. No GPU infrastructure is required.
-
-| Feature | Model | Input | Output |
+| Method | Path | Auth | Description |
 |---|---|---|---|
-| Image Generation | Stable Diffusion 3 | Text prompt | Image URL (Replicate CDN) |
-| Background Removal | Rembg | Image URL | PNG with alpha channel (Replicate CDN) |
+| `GET` | `/api/projects` | ✓ | Paginated list of the caller's projects (`page`, `limit` query params) |
+| `POST` | `/api/projects` | ✓ | Create a new blank project |
+| `GET` | `/api/projects/:id` | ✓ | Fetch a single project (ownership-checked) |
+| `PATCH` | `/api/projects/:id` | ✓ | Partial update (name, json, dimensions, thumbnail) |
+| `DELETE` | `/api/projects/:id` | ✓ | Hard delete (ownership-checked) |
+| `POST` | `/api/projects/:id/duplicate` | ✓ | Deep-clone a project |
+| `GET` | `/api/projects/templates` | ✓ | Paginated template gallery |
 
-The Replicate client runs synchronously — the request waits for the prediction to complete. For long-running generations, this can exceed the default serverless function timeout. Acceptable for an interactive design tool where users expect to wait on AI operations.
+### Images
 
-Generated image URLs are CDN-hosted by Replicate. The `next.config.mjs` allowlist includes `replicate.delivery` for `next/image` optimization.
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/api/images` | ✓ | Proxy Unsplash search (prevents key exposure to the client) |
 
----
+### AI
 
-## Design Decisions & Trade-offs
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `POST` | `/api/ai/generate-image` | ✓ + Pro | Text-to-image via Replicate SD3 |
+| `POST` | `/api/ai/remove-bg` | ✓ + Pro | Background removal via Replicate Rembg |
 
-### 1. Hono over tRPC
+### Subscriptions
 
-**Decision:** Use Hono with its RPC client instead of tRPC.
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/api/subscriptions/current` | ✓ | Current subscription status |
+| `POST` | `/api/subscriptions/checkout` | ✓ | Create a Stripe Checkout session |
+| `POST` | `/api/subscriptions/billing` | ✓ | Create a Stripe Billing Portal session |
+| `POST` | `/api/subscriptions/webhook` | — | Stripe webhook receiver (signature-verified) |
 
-**Why:** Hono is HTTP-first. Routes are standard `GET`/`POST` endpoints consumable by any HTTP client (curl, mobile, external integrations) without a tRPC adapter. The type-safety story is equivalent — `InferResponseType` and `InferRequestType` give full end-to-end inference. Hono also runs natively on Cloudflare Workers, Deno, and Bun without modification.
+### Users
 
-**Trade-off:** tRPC's batching, subscriptions (WebSocket), and React integration are more mature. For a CRUD-heavy app with no real-time requirements, Hono's simplicity wins.
-
----
-
-### 2. Fabric.js canvas state as a serialized JSON blob
-
-**Decision:** Store the entire canvas as `project.json: text` rather than decomposing objects into relational rows.
-
-**Why:** Fabric.js has a first-class `canvas.toJSON()` / `canvas.loadFromJSON()` API. The canvas object graph (nested groups, clip paths, filters, transforms) does not have a natural relational mapping. Decomposing it would require a custom serialization layer with no query-time benefit — canvas content is never searched or aggregated at the database level.
-
-**Trade-off:** The `json` column is opaque. You cannot write SQL to find "all projects that contain a blue rectangle." If search-on-canvas-content becomes a requirement, a secondary index (Postgres full-text or a dedicated search service) would be needed.
-
----
-
-### 3. In-memory undo/redo stack
-
-**Decision:** Undo/redo history lives only in browser memory, not persisted to the server.
-
-**Why:** Persisting every intermediate edit state would require either a full snapshot per keystroke (high write amplification) or a structured diff/patch format (high implementation complexity). For a design tool where "undo" is a session-scoped operation, in-memory is correct.
-
-**Trade-off:** History is lost on page refresh. If the user refreshes mid-session, undo history resets to the last autosaved checkpoint. This is the same behavior as Figma's undo stack.
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/api/users/me` | ✓ | Authenticated user profile |
 
 ---
 
-### 4. 500 ms debounced autosave vs. explicit save
+## 5. Editor Architecture
 
-**Decision:** Autosave on every change with a 500 ms debounce; no explicit "Save" button.
+The editor is the most complex subsystem. It is built around Fabric.js operating as a managed imperative object, wrapped in React hooks.
 
-**Why:** Eliminates the cognitive overhead of manual saving. Industry standard for collaborative design tools (Figma, Notion, Linear).
+```
+┌────────────────────────────────────────────────────────────┐
+│  <Editor />  (client component)                            │
+│                                                            │
+│  useEditor()   ←─── the central hook, returns Editor API  │
+│     │                                                      │
+│     ├── useHistory()      undo/redo stack (JSON snapshots) │
+│     ├── useAutoResize()   keeps canvas fit to viewport     │
+│     ├── useCanvasEvents() Fabric event → React state sync  │
+│     ├── useHotkeys()      Ctrl+Z, Ctrl+C, Delete, …        │
+│     ├── useClipboard()    copy/paste object graph          │
+│     ├── useLoadState()    hydrates canvas from DB JSON     │
+│     └── useWindowEvents() beforeunload dirty-check         │
+│                                                            │
+│  Sidebar panels (tool-specific):                           │
+│    ShapeSidebar  TextSidebar  ImageSidebar  AiSidebar      │
+│    FillColorSidebar  StrokeColorSidebar  FilterSidebar      │
+│    DrawSidebar  OpacitySidebar  FontSidebar  TemplateSidebar│
+│                                                            │
+│  Toolbar  →  context-sensitive controls for selection      │
+│  Footer   →  zoom in/out, fit-to-screen                    │
+└────────────────────────────────────────────────────────────┘
+```
 
-**Trade-off:** Generates continuous write traffic. For high-frequency edits (rapid drag), this still produces multiple writes per second. A longer debounce (2–5 s) would reduce writes at the cost of higher data-loss exposure. The 500 ms value is tuned for interactive feel vs. write cost balance.
+### Autosave flow
+
+```
+canvas:object:modified
+        │
+        ▼
+  useCanvasEvents → marks dirty, calls save()
+        │
+        ▼
+  save() [use-history.ts]
+    JSON.stringify(canvas.toJSON(JSON_KEYS))
+        │
+        ▼
+  useAutoSave (debounced 500 ms)
+        │
+        ▼
+  PATCH /api/projects/:id   { json, updatedAt }
+        │
+        ▼
+  TanStack Query mutation → optimistic cache update
+```
+
+### Undo / redo
+
+History is maintained as an in-memory array of serialised canvas snapshots. On undo, the previous snapshot is loaded back via `canvas.loadFromJSON`. This is O(n) in canvas complexity but avoids the need for a separate command pattern — acceptable at the object counts typical of a design canvas.
 
 ---
 
-### 5. NextAuth JWT sessions over database sessions
+## 6. Auth & Session Design
 
-**Decision:** `session: { strategy: "jwt" }` — no server-side session lookup per request.
+```
+Sign-in flow (Credentials)              Sign-in flow (OAuth)
+─────────────────────────               ──────────────────────
+Browser → POST /api/auth/callback       Browser → GET /api/auth/signin/github
+  email + password                        redirect to provider
+  │                                       provider callback → /api/auth/callback
+  ▼                                       │
+bcrypt.compare(password, hash)            ▼
+  │                                     DrizzleAdapter.linkAccount()
+  ▼                                       upserts user + account rows
+NextAuth issues signed JWT                NextAuth issues signed JWT
+  (HS256, AUTH_SECRET)                    │
+  │                                       ▼
+  ▼                                     Set-Cookie: next-auth.session-token
+Set-Cookie: next-auth.session-token     (httpOnly, Secure, SameSite=Lax)
+(httpOnly, Secure, SameSite=Lax)
+```
 
-**Why:** Every API request decodes a local JWT without touching the database. This is critical for Hono route handlers which may scale horizontally — no shared session store required.
+**Why JWT strategy, not database sessions?**
 
-**Trade-off:** JWTs cannot be invalidated server-side before they expire. A compromised token is valid until expiry. Mitigated by short token TTL and `httpOnly` cookie storage (XSS-resistant).
+Database sessions require a `SELECT` on every authenticated request. With Neon serverless, each connection may cold-start a compute node. JWT validation is pure CPU — zero DB round-trips for the hot path. The trade-off is that revocation requires either a short JWT TTL or a token blocklist (not currently implemented).
 
----
+**OAuth account linking**
 
-### 6. Stripe webhooks as the billing source of truth
-
-**Decision:** Subscription state is written exclusively via webhooks, not the checkout redirect.
-
-**Why:** Browser redirects are unreliable — users close tabs, network drops, etc. The `checkout.session.completed` webhook is retried by Stripe for 72 hours with exponential backoff. This guarantees the subscription row is created even if the user never returns to the success URL.
-
-**Trade-off:** There is a window between payment completion and webhook delivery (typically < 2 s, but can be delayed) where the user's UI may not reflect their new subscription. The success modal is shown optimistically via the `?success=1` query param; the actual access gate uses the DB-backed subscription check.
-
----
-
-### 7. Replicate for AI inference (no self-hosted models)
-
-**Decision:** All AI inference runs on Replicate's managed platform.
-
-**Why:** Zero GPU infrastructure to operate. Cost is strictly pay-per-prediction. Multiple models (SD3, Rembg) share the same API contract.
-
-**Trade-off:** Replicate adds ~1–3 s cold-start latency if the model hasn't run recently. Cannot fine-tune models on user data or run inference offline. Vendor dependency for a core feature. For a product at scale, migrating to a self-hosted inference cluster (e.g., Modal, RunPod, or dedicated GPU instances) would be the next step.
-
----
-
-### 8. UploadThing over self-managed S3
-
-**Decision:** User file uploads go through UploadThing rather than a direct S3 presigned URL flow.
-
-**Why:** UploadThing handles file validation, virus scanning hooks, CDN delivery, and the presigned URL lifecycle without custom infrastructure. Tailwind plugin integration (`uploadthing/tw`) gives styled upload components out of the box.
-
-**Trade-off:** Additional vendor dependency; pricing is per-GB uploaded. For high-volume uploads, a direct S3 flow with a custom presigned URL endpoint would be more cost-efficient.
+The Drizzle adapter stores OAuth accounts in the `account` table keyed on `(provider, providerAccountId)`. A user who signs in with Google and then with credentials sharing the same email gets two separate `user` rows unless explicit account merging is implemented. This is a known gap — see [§10](#10-design-decisions--trade-offs).
 
 ---
 
-## Local Development
+## 7. Subscription & Paywall
+
+### State machine
+
+```
+                    ┌──────────────┐
+         checkout   │              │  invoice.payment_succeeded
+         completed  │   active     │◀─────────────────────────┐
+       ┌───────────▶│              │                           │
+       │            └──────┬───────┘                           │
+       │                   │  cancellation /                   │
+       │                   │  payment failure                  │
+       │                   ▼                                   │
+  [no row]          ┌──────────────┐                    ┌──────┴──────┐
+       │            │  past_due /  │                    │   Stripe    │
+       │            │  canceled    │                    │   Billing   │
+       │            └──────────────┘                    │   Portal    │
+       │                                                └─────────────┘
+       │
+       └── POST /api/subscriptions/checkout
+               → stripe.checkout.sessions.create()
+               → redirect to Stripe hosted page
+```
+
+**Webhook reliability:** Stripe retries webhooks for up to 3 days with exponential backoff. The handler is idempotent — `INSERT` on `checkout.session.completed` and `UPDATE` on `invoice.payment_succeeded` both use the Stripe subscription ID as the natural key.
+
+**Paywall enforcement:** The `usePaywall` hook checks `subscription.active` on the client. AI endpoints (`/api/ai/*`) re-check on the server by calling `checkIsActive(subscription)` before proxying to Replicate. Client-side gating is UX; server-side gating is security.
+
+---
+
+## 8. AI Pipeline
+
+```
+Client                      Next.js Server              Replicate
+  │                               │                         │
+  │── POST /api/ai/generate-image▶│ verifyAuth + Pro check  │
+  │   { prompt }                  │                         │
+  │                               │── POST /predictions ───▶│
+  │                               │   model: stability-ai/  │
+  │                               │   stable-diffusion-3    │
+  │                               │   (sync, await output)  │
+  │                               │◀── { output: [url] } ───│
+  │◀── 200 { data: imageUrl } ────│                         │
+
+  │── POST /api/ai/remove-bg ────▶│ verifyAuth + Pro check  │
+  │   { image }                   │                         │
+  │                               │── POST /predictions ───▶│
+  │                               │   model: cjwbw/rembg    │
+  │                               │◀── { output: url } ─────│
+  │◀── 200 { data: imageUrl } ────│                         │
+```
+
+Replicate predictions are awaited synchronously (polling handled by the SDK). This means the server-side handler holds an open HTTP connection for the duration of inference — typically 5–15 s for SD3 and 2–5 s for Rembg. This works within Vercel's 60 s serverless function limit and Next.js standalone's Node.js process model.
+
+---
+
+## 9. File Storage
+
+UploadThing acts as an S3-compatible blob store with a React upload hook. The upload core (`src/app/api/uploadthing/core.ts`) defines the file router — accepted MIME types, size limits, and auth callback. The resulting `utfs.io` CDN URLs are stored on `project.thumbnailUrl` and referenced directly in `<Image>` tags (whitelisted in `next.config.mjs`).
+
+---
+
+## 10. Design Decisions & Trade-offs
+
+### 10.1 Canvas state serialised as opaque JSON blob
+
+**Decision:** `project.json` stores the raw Fabric.js `toJSON()` output as a text column.
+
+**Rationale:** The Fabric object graph contains 40+ fields per object (transforms, fill, stroke, shadow, clipPath, filters, etc.). Normalising this into relational rows would require a polymorphic object table and a recursive join on every load — far more complexity for no query benefit.
+
+**Trade-off:** You lose the ability to run any SQL analytics over canvas content. Full-text search across canvas text objects is impossible without post-processing. Accepting this because the product is not search-centric.
+
+**Risk:** If Fabric.js changes its serialisation format between major versions, stored JSON becomes incompatible. Mitigation: pin `fabric` to `5.3.0-browser` and run a migration script if upgrading.
+
+---
+
+### 10.2 Hono on top of Next.js instead of native Route Handlers
+
+**Decision:** All API logic lives in a single Hono app, mounted via a Next.js catch-all route.
+
+**Rationale:** Hono's `hc` typed client lets the frontend call API methods with full TypeScript inference — no OpenAPI codegen required. Route-level middleware (`verifyAuth`, `zValidator`) is composable and tested once. Native Route Handlers would require duplicating middleware on every file.
+
+**Trade-off:** The monolithic Hono app is a single module boundary. Tree-shaking is limited — every route handler is loaded even when only one is needed. At the current scale (< 20 routes) this is immaterial. If the API surface grows to 200+ routes, splitting into multiple catch-all segments becomes worthwhile.
+
+---
+
+### 10.3 JWT sessions with no revocation
+
+**Decision:** NextAuth is configured with `strategy: "jwt"`. Sessions are validated purely by signature, not by a database lookup.
+
+**Rationale:** Eliminates a DB round-trip on every authenticated request. Critical when Neon serverless can add 50–200 ms of connection latency on cold starts.
+
+**Trade-off:** A compromised JWT is valid until its expiry. There is no session table to delete from. Acceptable for the current threat model (self-service consumer app, no PII beyond email). If the product ever handles sensitive data, add a Redis-backed token blocklist or switch to database sessions on a persistent connection pool.
+
+---
+
+### 10.4 Neon serverless PostgreSQL (no replica)
+
+**Decision:** Single Neon branch with the pooled connection string.
+
+**Rationale:** Neon's serverless driver handles connection pooling transparently. Auto-scaling compute eliminates capacity planning for low-to-medium traffic.
+
+**Trade-off:** Neon's free tier has a 500 MB storage limit and compute-hours cap. Read-heavy production traffic should add a read replica or a caching layer (Redis / Upstash) in front of project queries. Also: Neon's serverless driver uses WebSockets, which means it cannot run inside an edge runtime — the Hono router is explicitly set to `runtime = "nodejs"`.
+
+---
+
+### 10.5 Replicate for AI inference (synchronous polling)
+
+**Decision:** AI endpoints await Replicate predictions synchronously before responding to the client.
+
+**Rationale:** Simplest implementation. No queue, no webhook callback URL, no client-side polling loop.
+
+**Trade-off:** Server-side handler holds an open connection for 5–15 s. This blocks the Node.js event loop thread only minimally (the SDK polls with async `await`) but does tie up a serverless function invocation. At scale, the correct architecture is: return a `predictionId` immediately, and have the client poll `GET /api/ai/status/:id`. Not worth the complexity at current usage levels.
+
+---
+
+### 10.6 Monorepo structure (single Next.js app)
+
+**Decision:** All concerns — auth, editor, subscriptions, AI — live in one Next.js application with feature-folder organisation (`src/features/*`).
+
+**Rationale:** Zero inter-service network overhead. A single deploy unit. Type-sharing is trivial because everything is TypeScript in the same module graph.
+
+**Trade-off:** A single large deploy unit; all features scale together. If AI inference usage diverges significantly from dashboard traffic, a separate service would allow independent scaling. The current organisation makes extraction straightforward — each `features/` folder is already a bounded context with its own API hooks, components, and types.
+
+---
+
+### 10.7 No test suite
+
+**Decision:** No unit, integration, or end-to-end tests are included.
+
+**Trade-off:** This is the most significant quality gap. The editor's `use-editor.ts` hook contains the bulk of business logic and has no test coverage. Priority for the next engineering cycle:
+1. Integration tests for the Hono API routes against a Neon branch (not mocks — see lessons from real-world regressions caused by mock drift).
+2. Unit tests for `checkIsActive` and the history/undo state machine.
+3. Playwright e2e for the critical path: sign-in → create project → edit → export.
+
+---
+
+## 11. Operational Runbook
+
+### Stripe webhook local testing
+
+```bash
+# Install the Stripe CLI, then:
+stripe listen --forward-to http://localhost:3000/api/subscriptions/webhook
+# Copy the printed webhook signing secret into STRIPE_WEBHOOK_SECRET
+```
+
+### Database migrations
+
+```bash
+# Generate migration SQL from schema changes:
+bun run db:generate
+
+# Apply migrations to the target database:
+bun run db:migrate
+
+# Inspect data via Drizzle Studio:
+bun run db:studio
+```
+
+Migrations run against whichever `DATABASE_URL` is in scope. In CI, point at a Neon branch, not the production database.
+
+### Rotating AUTH_SECRET
+
+1. Generate a new secret: `openssl rand -base64 32`
+2. Update the environment variable in production.
+3. All existing JWT sessions are immediately invalidated — users are signed out. Plan for a maintenance window or implement a grace-period dual-secret validation if zero-downtime rotation is required.
+
+### Scaling beyond a single Node process
+
+The application stores no local state — canvas state is in Neon, session state is in the JWT, file state is in UploadThing. Any number of replicas can run behind a load balancer with sticky-session routing disabled.
+
+```
+            ┌──────────────┐
+            │  Load Balancer│  (e.g. nginx, Cloudflare)
+            └──────┬───────┘
+         ┌─────────┴─────────┐
+         ▼                   ▼
+  ┌─────────────┐   ┌─────────────┐
+  │  Canvify    │   │  Canvify    │   ← stateless; share nothing
+  │  replica 1  │   │  replica 2  │
+  └──────┬──────┘   └──────┬──────┘
+         └────────┬─────────┘
+                  ▼
+           ┌─────────────┐
+           │  Neon DB    │   ← single source of truth
+           └─────────────┘
+```
+
+---
+
+## 12. Local Development
 
 ### Prerequisites
 
-- Node.js 20+ or Bun 1.x
-- A Neon account with a PostgreSQL database
-- A Stripe account (test mode keys are sufficient)
-- Replicate API token
-- Unsplash developer account
-- UploadThing account
-- Google OAuth application (optional, for OAuth login)
+- **Bun** ≥ 1.1 — `curl -fsSL https://bun.sh/install | bash`
+- **Node.js** ≥ 20 (used by some Drizzle tooling)
+- A [Neon](https://neon.tech) project with the connection string
+- A [Stripe](https://stripe.com) account with a test Price ID
+- Optional: Replicate, Unsplash, and UploadThing accounts for AI / image features
 
 ### Setup
 
 ```bash
-# 1. Clone and install
+# 1. Clone
 git clone <repo-url>
-cd nextjs-canva-clone
-bun install          # or npm install
+cd canvify
 
-# 2. Configure environment
+# 2. Install dependencies
+bun install
+
+# 3. Configure environment
 cp .env.example .env.local
-# Fill in all required variables (see below)
+# Fill every value in .env.local
 
-# 3. Push database schema
-bun run db:push      # drizzle-kit push
+# 4. Push schema to the database (first time only)
+bun run db:generate
+bun run db:migrate
 
-# 4. Start dev server
+# 5. Start the dev server
 bun run dev
+# → http://localhost:3000
 ```
 
-The app will be available at `http://localhost:3000`.
-
-### Database Management
+### Stripe webhook (local)
 
 ```bash
-bun run db:push      # Push schema changes to the database
-bun run db:studio    # Open Drizzle Studio (visual DB browser)
+# In a separate terminal:
+stripe listen --forward-to http://localhost:3000/api/subscriptions/webhook
 ```
 
-### Stripe Webhook (local)
-
-Use the Stripe CLI to forward webhook events to your local server:
-
-```bash
-stripe listen --forward-to localhost:3000/api/subscriptions/webhook
-```
-
-The CLI prints a webhook signing secret — use it as `STRIPE_WEBHOOK_SECRET` in your `.env.local`.
+Copy the `whsec_...` secret from the Stripe CLI output into `STRIPE_WEBHOOK_SECRET` in `.env.local`, then restart the dev server.
 
 ---
 
-## Environment Variables
+## 13. Docker Deployment
+
+### Single-image build
+
+The project uses a three-stage Dockerfile:
+
+| Stage | Base | Purpose |
+|---|---|---|
+| `deps` | `oven/bun:1.1-alpine` | Install all dependencies from `bun.lockb` |
+| `builder` | `oven/bun:1.1-alpine` | Run `next build` with standalone output |
+| `runner` | `node:20-alpine` | Minimal production image — only the standalone bundle |
+
+The `output: "standalone"` setting in `next.config.mjs` instructs Next.js to emit a self-contained `server.js` with a pruned `node_modules` — the final image is typically **< 200 MB** vs. > 1 GB for a naive copy of `node_modules`.
+
+```
+Image size comparison
+──────────────────────
+Naive (copy node_modules):   ~1.1 GB
+Standalone (this Dockerfile): ~180 MB
+```
+
+### Build & run
 
 ```bash
-# ─── Database ────────────────────────────────────────────────────────
-DATABASE_URL=postgresql://user:pass@host/db?sslmode=require
+# Build image
+docker build \
+  --build-arg NEXT_PUBLIC_APP_URL=https://canvify.example.com \
+  -t canvify:latest .
 
-# ─── NextAuth ────────────────────────────────────────────────────────
-AUTH_SECRET=<random-32-byte-hex>
-GOOGLE_ID=<google-oauth-client-id>
-GOOGLE_SECRET=<google-oauth-client-secret>
-
-# ─── Stripe ──────────────────────────────────────────────────────────
-STRIPE_SECRET_KEY=sk_test_…
-STRIPE_WEBHOOK_SECRET=whsec_…
-STRIPE_PRICE_ID=price_…
-
-# ─── AI / Replicate ──────────────────────────────────────────────────
-REPLICATE_API_TOKEN=r8_…
-
-# ─── Images / Unsplash ───────────────────────────────────────────────
-NEXT_PUBLIC_UNSPLASH_ACCESS_KEY=<unsplash-access-key>
-
-# ─── File Upload / UploadThing ───────────────────────────────────────
-UPLOADTHING_SECRET=sk_live_…
-UPLOADTHING_APP_ID=<app-id>
-
-# ─── App ─────────────────────────────────────────────────────────────
-NEXT_PUBLIC_APP_URL=http://localhost:3000
+# Run (pass secrets via environment)
+docker run -p 3000:3000 \
+  --env-file .env.local \
+  canvify:latest
 ```
+
+### Docker Compose (local)
+
+```bash
+# Start the application container
+docker compose up --build
+
+# Stop and remove containers
+docker compose down
+```
+
+`docker-compose.yml` reads all secrets from `.env.local` via the `${VAR}` interpolation syntax — no secrets are hardcoded in the compose file.
+
+### Database migrations in containers
+
+Migrations are **not** run automatically on container start. Run them as a one-off job before deploying a new schema version:
+
+```bash
+docker run --rm \
+  --env DATABASE_URL="$DATABASE_URL" \
+  canvify:latest \
+  node -e "require('./migrate.js')"
+```
+
+Or, with Bun available in a separate migration image:
+
+```bash
+docker run --rm \
+  --env DATABASE_URL="$DATABASE_URL" \
+  oven/bun:1.1-alpine \
+  sh -c "bun install && bun run db:migrate"
+```
+
+### Production checklist
+
+- [ ] `NEXT_PUBLIC_APP_URL` build arg set to the real public URL
+- [ ] `AUTH_SECRET` is a fresh 32-byte random value (not the dev placeholder)
+- [ ] Stripe is in **live mode** with a live `STRIPE_PRICE_ID` and `STRIPE_WEBHOOK_SECRET`
+- [ ] Neon is pointed at the production branch (not the dev branch)
+- [ ] Health check endpoint responding (`GET /api/health` — add a trivial 200 handler if not present)
+- [ ] TLS terminated at the load balancer or reverse proxy (never inside the container)
+- [ ] Log aggregation (stdout/stderr) piped to your observability platform
 
 ---
 
-## Deployment
+## 14. Environment Variables
 
-The application targets **Vercel** (zero-config for Next.js App Router) but runs on any Node.js host.
-
-### Vercel
-
-```bash
-vercel deploy --prod
-```
-
-Set all environment variables in the Vercel dashboard. Update `NEXT_PUBLIC_APP_URL` to your production domain.
-
-### Docker / Self-hosted
-
-```dockerfile
-FROM node:20-alpine AS builder
-WORKDIR /app
-COPY . .
-RUN npm ci && npm run build
-
-FROM node:20-alpine AS runner
-WORKDIR /app
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static ./.next/static
-COPY --from=builder /app/public ./public
-EXPOSE 3000
-CMD ["node", "server.js"]
-```
-
-Enable `output: "standalone"` in `next.config.mjs` for the above Dockerfile.
-
-### Post-deployment checklist
-
-- [ ] `NEXT_PUBLIC_APP_URL` set to production domain
-- [ ] Stripe webhook endpoint registered at `https://<domain>/api/subscriptions/webhook`
-- [ ] Stripe webhook events enabled: `checkout.session.completed`, `invoice.payment_succeeded`
-- [ ] `DATABASE_URL` pointing to production Neon branch
-- [ ] Google OAuth redirect URIs updated to include production domain
-- [ ] UploadThing callback URL allowlist updated
+| Variable | Required | Description |
+|---|---|---|
+| `NEXT_PUBLIC_APP_URL` | ✓ | Canonical public URL — no trailing slash. Used by Stripe redirects and NextAuth callbacks |
+| `DATABASE_URL` | ✓ | Neon pooled connection string |
+| `AUTH_SECRET` | ✓ | 32-byte random secret for JWT signing. Generate: `openssl rand -base64 32` |
+| `AUTH_GITHUB_ID` | ✓ | GitHub OAuth App client ID |
+| `AUTH_GITHUB_SECRET` | ✓ | GitHub OAuth App client secret |
+| `AUTH_GOOGLE_ID` | ✓ | Google OAuth 2.0 client ID |
+| `AUTH_GOOGLE_SECRET` | ✓ | Google OAuth 2.0 client secret |
+| `STRIPE_SECRET_KEY` | ✓ | Stripe secret key (`sk_live_*` in production) |
+| `STRIPE_WEBHOOK_SECRET` | ✓ | Stripe webhook signing secret (`whsec_*`) |
+| `STRIPE_PRICE_ID` | ✓ | Price ID of the Pro subscription plan |
+| `REPLICATE_API_TOKEN` | AI features | Replicate API token (`r8_*`) |
+| `UNSPLASH_ACCESS_KEY` | Image search | Unsplash API access key |
+| `UPLOADTHING_SECRET` | File upload | UploadThing secret key |
+| `UPLOADTHING_APP_ID` | File upload | UploadThing application ID |

@@ -1,0 +1,58 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Canvify — local Docker Compose
+#
+# All external backing services (Neon, Stripe, Replicate, UploadThing,
+# Unsplash) are managed SaaS; this file runs only the application itself.
+# Copy .env.example → .env.local and fill every value before starting.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Baked into the client bundle at build time.
+        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+    image: canvify:local
+    container_name: canvify_app
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      # ── Database (Neon serverless PostgreSQL) ──────────────────────────────
+      DATABASE_URL: ${DATABASE_URL}
+
+      # ── Auth (NextAuth v5 / Auth.js) ───────────────────────────────────────
+      AUTH_SECRET: ${AUTH_SECRET}
+      AUTH_GITHUB_ID: ${AUTH_GITHUB_ID}
+      AUTH_GITHUB_SECRET: ${AUTH_GITHUB_SECRET}
+      AUTH_GOOGLE_ID: ${AUTH_GOOGLE_ID}
+      AUTH_GOOGLE_SECRET: ${AUTH_GOOGLE_SECRET}
+
+      # ── Stripe ─────────────────────────────────────────────────────────────
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
+      STRIPE_PRICE_ID: ${STRIPE_PRICE_ID}
+
+      # ── AI (Replicate) ─────────────────────────────────────────────────────
+      REPLICATE_API_TOKEN: ${REPLICATE_API_TOKEN}
+
+      # ── Image library (Unsplash) ───────────────────────────────────────────
+      UNSPLASH_ACCESS_KEY: ${UNSPLASH_ACCESS_KEY}
+
+      # ── File storage (UploadThing) ─────────────────────────────────────────
+      UPLOADTHING_SECRET: ${UPLOADTHING_SECRET}
+      UPLOADTHING_APP_ID: ${UPLOADTHING_APP_ID}
+
+      # ── Public runtime config ──────────────────────────────────────────────
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
